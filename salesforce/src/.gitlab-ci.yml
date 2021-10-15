@@ -1,0 +1,61 @@
+#
+# Download the Salesforce CLI and install it
+#
+before_script:
+# Set up environment variables
+  - export CLIURL=https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz  
+  - export SFDX_AUTOUPDATE_DISABLE=false
+  - export SFDX_USE_GENERIC_UNIX_KEYCHAIN=true
+  - export SFDX_DOMAIN_RETRY=300
+  - export SFDX_DISABLE_APP_HUB=true
+  - export SFDX_LOG_LEVEL=DEBUG
+  - export DEPLOYDIR=salesforce/Src/force-app
+  #Create sfdx directory
+  - mkdir sfdx
+  #Install Salesforce CLI 
+  - wget -qO- $CLIURL | tar xJ -C sfdx --strip-components 1
+  - "sudo ./sfdx/install"
+  # Output CLI version and plug-in information
+  - /usr/local/bin/sfdx update
+  - /usr/local/bin/sfdx --version
+  - /usr/local/bin/sfdx plugins --core
+  # Create tmp folders
+  - mkdir tmp-force-app
+  - mkdir force-app
+
+####################################################
+# DEPLOY DEVELOP
+####################################################
+app-deploy-dev:
+    stage: app-deploy-dev
+    script:
+        - echo "start app-deploy-dev"
+        # Authorize target deployment org
+        - /usr/local/bin/sfdx force:auth:jwt:grant --instanceurl https://test.salesforce.com --clientid $SF_CONSUMER_KEY_DEV --jwtkeyfile assets/server.key --username $SF_USERNAME_DEV --setalias DEVSPRINT 
+        - cp salesforce/src/sfdx-project-gitlab.json sfdx-project.json
+        - cp salesforce/src/.forceignore .forceignore
+        - git  diff --name-only ${CI_COMMIT_BEFORE_SHA}...${CI_COMMIT_SHA} $DEPLOYDIR > listfiles
+        - tar -czvf deploy_files.tar.gz --files-from listfiles
+        - tar -xzvf deploy_files.tar.gz -C tmp-force-app
+        - (for f in $(find  tmp-force-app/ -name "*.*" ! -name "*.js" ! -name "*.xml" ! -name "*.css" ! -name "*.svg" ! -name "*.design" ! -name "*.auradoc"); do length=${#f};strMeta='-meta.xml';filename=${f:14:$length}$strMeta;cp --parents $filename tmp-force-app; done);
+        - (for f in $(find  tmp-force-app/salesforce/Src/force-app/main/default/aura/ -name "*.*"); do length=${#f};filename=${f:14:$length};filepath=${filename%/*};cp --parents $filepath/* tmp-force-app; done);
+        - cp -r tmp-force-app/salesforce/src/force-app .
+        #add profiles
+        - cp -r salesforce/Src/force-app/main/default/profiles force-app/main/default/profiles
+        # Deploy to target deployment org and run unit tests    
+        - /usr/local/bin/sfdx force:source:deploy --ignoreerrors --ignorewarnings --sourcepath force-app --targetusername DEVSPRINT
+    only:
+        - develop
+####################################################
+# RUN TEST IN PREPROD
+####################################################    
+code-testing-preprod:
+    stage: code-testing-preprod
+    when: manual
+    script:
+        # Authenticate to the Dev Hub using the server key
+        - /usr/local/bin/sfdx force:auth:jwt:grant --instanceurl https://test.salesforce.com --clientid $SF_CONSUMER_KEY_DEV --jwtkeyfile assets/server.key --username $SF_USERNAME_PREPROD --setalias PREPROD
+        # Unit Testing
+        - /usr/local/bin/sfdx force:apex:test:run --wait 10 --resultformat human --codecoverage --testlevel RunLocalTests --targetusername $SF_USERNAME_PREPROD
+    only:
+        - release
